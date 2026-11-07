@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-switchboard}
+      POSTGRES_USER: ${POSTGRES_USER:-switchboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-switchboard-local}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-switchboard} -d ${POSTGRES_DB:-switchboard}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://switchboard:switchboard-local@db:5432/switchboard}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DEMO_PROCESSING_DELAY_SECONDS: ${DEMO_PROCESSING_DELAY_SECONDS:-2}
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  worker:
+    build: ./backend
+    command: celery -A app.celery_app.celery worker --loglevel=info
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://switchboard:switchboard-local@db:5432/switchboard}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DEMO_PROCESSING_DELAY_SECONDS: ${DEMO_PROCESSING_DELAY_SECONDS:-2}
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  switch-adapter:
+    profiles: ["switch"]
+    build: ./backend
+    command: python -m app.switch_adapter
+    environment:
+      SWITCH_BASE_URL: ${SWITCH_BASE_URL:-}
+      SWITCH_ROOM_ID: ${SWITCH_ROOM_ID:-798664d5-c245-4a17-bbab-334d76eb3134}
+      SWITCH_CREDENTIALS_FILE: /run/switch-credentials/credentials.json
+      SWITCHBOARD_API_URL: http://api:8000/api/v1
+      SWITCH_ADAPTER_RETRY_SECONDS: ${SWITCH_ADAPTER_RETRY_SECONDS:-5}
+      SWITCH_ADAPTER_POLL_SECONDS: ${SWITCH_ADAPTER_POLL_SECONDS:-5}
+    volumes:
+      - switch_adapter_data:/var/lib/switchboard
+      - type: bind
+        source: ${SWITCH_CREDENTIALS_HOST_PATH:-./.switch-private/switchboard-credentials.json}
+        target: /run/switch-credentials/credentials.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: [api]
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: "${VITE_API_URL:-http://localhost:8000/api/v1}"
+    ports: ["5174:80"]
+    depends_on: [api]
+volumes:
+  postgres_data:
+  switch_adapter_data:
